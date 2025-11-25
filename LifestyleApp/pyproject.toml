@@ -1,0 +1,12 @@
+﻿[build-system]
+requires = ["setuptools>=61.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "ms_lifestyle_app"
+version = "0.1.0"
+description = "MS Lifestyle and Wellness Tracking Application"
+dependencies = [
+    "streamlit",
+    "plotly",
+]

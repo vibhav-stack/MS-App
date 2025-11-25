@@ -1,0 +1,332 @@
+import sys
+import os
+sys.path.append(os.path.dirname(os.path.dirname(os.path.dirname(__file__))))
+
+import streamlit as st
+import plotly.graph_objects as go
+from datetime import datetime, timedelta
+import sys
+from pathlib import Path
+
+# Add the src directory to the Python path
+src_path = str(Path(__file__).parent.parent.parent)
+if src_path not in sys.path:
+    sys.path.insert(0, src_path)
+
+from src.core.database import SymptomDatabase
+from src.core.models import WeeklySummary, MoodType
+
+class WellnessUI:
+    def __init__(self):
+        self.db = SymptomDatabase()
+        
+    def render_daily_summary(self, summary):
+        """Render the daily summary tab"""
+        if not summary:
+            st.warning("No data available for this date")
+            if st.button("Add Entry for Today"):
+                self._show_add_entry_form()
+            return
+            
+        # Create three columns for main metrics
+        col1, col2, col3 = st.columns(3)
+        
+        with col1:
+            st.markdown(
+                f"""
+                <div style='padding: 20px; border-radius: 10px; background-color: {summary.sleep_color_code}'>
+                    <h3>Sleep</h3>
+                    <p>{summary.sleep_hours} hours</p>
+                </div>
+                """,
+                unsafe_allow_html=True
+            )
+        
+        with col2:
+            st.markdown(
+                f"""
+                <div style='padding: 20px; border-radius: 10px; background-color: {summary.physical_comfort_color}'>
+                    <h3>Physical Comfort</h3>
+                    <p>{summary.physical_comfort}/10</p>
+                </div>
+                """,
+                unsafe_allow_html=True
+            )
+            
+        with col3:
+            st.markdown(
+                f"""
+                <div style='padding: 20px; border-radius: 10px; background-color: {summary.mood_color}'>
+                    <h3>Mood</h3>
+                    <p>{summary.mood.capitalize()}</p>
+                </div>
+                """,
+                unsafe_allow_html=True
+            )
+            
+        # Mental fog indicator
+        st.markdown(
+            f"""
+            <div style='padding: 20px; border-radius: 10px; background-color: {summary.mental_fog_color}'>
+                <h3>Mental Fog</h3>
+                <p>{"Present" if summary.mental_fog else "None"}</p>
+            </div>
+            """,
+            unsafe_allow_html=True
+        )
+        
+        # Additional metrics
+        st.subheader("Daily Statistics")
+        col1, col2, col3, col4 = st.columns(4)
+        col1.metric("Overall Wellbeing", f"{summary.overall_wellbeing}/10")
+        col2.metric("Pain Level", f"{summary.average_pain_level:.1f}/10")
+        col3.metric("Fatigue", f"{summary.average_fatigue_level:.1f}/10")
+        col4.metric("Total Symptoms", str(summary.total_symptoms_reported))
+        
+        # Activity and medication
+        st.subheader("Lifestyle Factors")
+        col1, col2 = st.columns(2)
+        col1.metric("Activity Level", f"{summary.activity_level}/5")
+        col2.metric("Medication", "✓" if summary.medication_adherence else "✗")
+        
+        if summary.notes:
+            st.text_area("Notes", summary.notes, disabled=True)
+            
+        # Edit button
+        if st.button("Edit Entry"):
+            self._show_edit_form(summary)
+            
+    def render_weekly_summary(self, start_date):
+        """Render the weekly summary tab"""
+        end_date = start_date + timedelta(days=6)
+        st.write(f"Week of {start_date.strftime('%B %d, %Y')}")
+        
+        # Get daily summaries for the week
+        daily_summaries = []
+        current_date = start_date
+        while current_date <= end_date:
+            summary = self.db.get_daily_summary(current_date)
+            if summary:
+                daily_summaries.append(summary)
+            current_date += timedelta(days=1)
+            
+        if not daily_summaries:
+            st.warning("No data available for this week")
+            return
+            
+        # Create weekly summary
+        weekly_summary = WeeklySummary(
+            week_start_date=start_date,
+            week_end_date=end_date,
+            daily_summaries=daily_summaries,
+            average_wellbeing=sum(ds.overall_wellbeing for ds in daily_summaries) / len(daily_summaries),
+            symptom_trend="",  # Will be calculated
+            most_common_symptoms=[],
+            weekly_notes="\n".join(filter(None, [ds.notes for ds in daily_summaries]))
+        )
+        weekly_summary.calculate_trends()
+        
+        # Display weekly trends
+        st.subheader("Weekly Overview")
+        col1, col2 = st.columns(2)
+        
+        with col1:
+            st.metric("Average Wellbeing", f"{weekly_summary.average_wellbeing:.1f}/10")
+        with col2:
+            st.metric("Trend", weekly_summary.symptom_trend)
+            
+        # Create trend visualizations
+        self._plot_weekly_trends(daily_summaries)
+        
+        if weekly_summary.most_common_symptoms:
+            st.subheader("Most Common Symptoms")
+            for symptom in weekly_summary.most_common_symptoms:
+                st.write(f"• {symptom}")
+                
+        if weekly_summary.weekly_notes:
+            st.text_area("Weekly Notes", weekly_summary.weekly_notes, disabled=True)
+    
+    def _show_add_entry_form(self):
+        """Show form to add a new entry"""
+        with st.form("new_entry"):
+            st.subheader("Add New Entry")
+            
+            sleep_hours = st.slider("Sleep Hours", 0.0, 24.0, 8.0, 0.5)
+            physical_comfort = st.slider("Physical Comfort", 1, 10, 5)
+            mental_fog = st.checkbox("Mental Fog")
+            mood = st.selectbox("Mood", ["HAPPY", "SAD", "ANXIOUS", "NEUTRAL"])
+            overall_wellbeing = st.slider("Overall Wellbeing", 0, 10, 5)
+            activity_level = st.slider("Activity Level", 1, 5, 3)
+            medication_adherence = st.checkbox("Medication Taken", value=True)
+            notes = st.text_area("Notes")
+            
+            if st.form_submit_button("Save Entry"):
+                self._save_new_entry(
+                    sleep_hours, physical_comfort, mental_fog, 
+                    mood, overall_wellbeing, activity_level, 
+                    medication_adherence, notes
+                )
+    
+    def _show_edit_form(self, summary):
+        """Show form to edit an existing entry"""
+        with st.form("edit_entry"):
+            st.subheader("Edit Entry")
+            
+            sleep_hours = st.slider("Sleep Hours", 0.0, 24.0, float(summary.sleep_hours), 0.5)
+            physical_comfort = st.slider("Physical Comfort", 1, 10, summary.physical_comfort)
+            mental_fog = st.checkbox("Mental Fog", summary.mental_fog)
+            mood = st.selectbox("Mood", ["HAPPY", "SAD", "ANXIOUS", "NEUTRAL"], 
+                              index=["HAPPY", "SAD", "ANXIOUS", "NEUTRAL"].index(summary.mood.upper()))
+            overall_wellbeing = st.slider("Overall Wellbeing", 0, 10, summary.overall_wellbeing)
+            activity_level = st.slider("Activity Level", 1, 5, summary.activity_level)
+            medication_adherence = st.checkbox("Medication Taken", summary.medication_adherence)
+            notes = st.text_area("Notes", summary.notes or "")
+            
+            if st.form_submit_button("Update Entry"):
+                self._update_entry(
+                    summary.date, sleep_hours, physical_comfort, mental_fog,
+                    mood, overall_wellbeing, activity_level,
+                    medication_adherence, notes
+                )
+            
+    def _plot_weekly_trends(self, daily_summaries):
+        """Create trend visualizations"""
+        dates = [ds.date.strftime("%Y-%m-%d") for ds in daily_summaries]
+        
+        # Wellbeing trend
+        fig = go.Figure()
+        fig.add_trace(go.Scatter(
+            x=dates,
+            y=[ds.overall_wellbeing for ds in daily_summaries],
+            name="Overall Wellbeing",
+            line=dict(color="#2E8B57", width=2)
+        ))
+        fig.update_layout(
+            title="Weekly Wellbeing Trend",
+            xaxis_title="Date",
+            yaxis_title="Score",
+            yaxis_range=[0, 10]
+        )
+        st.plotly_chart(fig)
+        
+        # Sleep hours
+        fig_sleep = go.Figure()
+        sleep_hours = [ds.sleep_hours for ds in daily_summaries]
+        fig_sleep.add_trace(go.Bar(
+            x=dates,
+            y=sleep_hours,
+            name="Sleep Hours",
+            marker_color=[
+                "red" if h < 6 else "yellow" if h < 7.5 else "green"
+                for h in sleep_hours
+            ]
+        ))
+        fig_sleep.update_layout(
+            title="Sleep Pattern",
+            xaxis_title="Date",
+            yaxis_title="Hours",
+            yaxis_range=[0, 12]
+        )
+        st.plotly_chart(fig_sleep)
+        
+        # Symptoms comparison
+        fig_symptoms = go.Figure()
+        fig_symptoms.add_trace(go.Scatter(
+            x=dates,
+            y=[ds.average_pain_level for ds in daily_summaries],
+            name="Pain",
+            line=dict(color="red", width=2)
+        ))
+        fig_symptoms.add_trace(go.Scatter(
+            x=dates,
+            y=[ds.average_fatigue_level for ds in daily_summaries],
+            name="Fatigue",
+            line=dict(color="orange", width=2)
+        ))
+        fig_symptoms.update_layout(
+            title="Symptoms Trends",
+            xaxis_title="Date",
+            yaxis_title="Severity",
+            yaxis_range=[0, 10]
+        )
+        st.plotly_chart(fig_symptoms)
+    
+    def _save_new_entry(self, sleep_hours, physical_comfort, mental_fog,
+                       mood, overall_wellbeing, activity_level,
+                       medication_adherence, notes):
+        """Save a new entry to the database"""
+        from src.core.models import DailySymptomLog
+        
+        log = DailySymptomLog(
+            date=datetime.now(),
+            sleep_hours=sleep_hours,
+            physical_comfort=physical_comfort,
+            mental_fog=mental_fog,
+            mood=getattr(MoodType, mood),
+            overall_wellbeing=overall_wellbeing,
+            activity_level=activity_level,
+            medication_adherence=medication_adherence,
+            notes=notes,
+            pain_symptoms=[],
+            fatigue_symptoms=[],
+            temperature_sensitivity=[],
+            visual_symptoms=[]
+        )
+        
+        self.db.add_daily_log(log)
+        st.success("Entry saved successfully!")
+        st.experimental_rerun()
+    
+    def _update_entry(self, date, sleep_hours, physical_comfort, mental_fog,
+                     mood, overall_wellbeing, activity_level,
+                     medication_adherence, notes):
+        """Update an existing entry in the database"""
+        log = self.db.get_daily_log(date)
+        if log:
+            log.sleep_hours = sleep_hours
+            log.physical_comfort = physical_comfort
+            log.mental_fog = mental_fog
+            log.mood = getattr(MoodType, mood)
+            log.overall_wellbeing = overall_wellbeing
+            log.activity_level = activity_level
+            log.medication_adherence = medication_adherence
+            log.notes = notes
+            
+            self.db.update_daily_log(date, log)
+            st.success("Entry updated successfully!")
+            st.experimental_rerun()
+        else:
+            st.error("Failed to update entry")
+
+def main():
+    st.set_page_config(
+        page_title="MS Wellness Tracker",
+        page_icon="🏥",
+        layout="wide"
+    )
+    
+    st.title("MS Wellness Tracker")
+    ui = WellnessUI()
+    
+    # Date selection
+    selected_date = st.date_input(
+        "Select Date",
+        value=datetime.now().date()
+    )
+    
+    # Create tabs
+    daily_tab, weekly_tab = st.tabs(["Daily Summary", "Weekly Summary"])
+    
+    # Handle daily tab
+    with daily_tab:
+        daily_summary = ui.db.get_daily_summary(datetime.combine(selected_date, datetime.min.time()))
+        ui.render_daily_summary(daily_summary)
+    
+    # Handle weekly tab
+    with weekly_tab:
+        # Calculate week start (Monday) and end (Sunday)
+        week_start = selected_date - timedelta(days=selected_date.weekday())
+        ui.render_weekly_summary(datetime.combine(week_start, datetime.min.time()))
+
+if __name__ == "__main__":
+    main()
