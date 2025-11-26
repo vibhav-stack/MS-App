@@ -1893,6 +1893,7 @@ with tab_admin:
 with tab_insights:
 
     st.markdown("### Patient Insights")
+    import openai_dailylog_module
     rows, columns = fetch_all_patients()
     if rows:
         df = pd.DataFrame(rows, columns=columns)
@@ -1944,5 +1945,18 @@ with tab_insights:
                 st.write(f"**Action Phrase:** {action_phrase}")
             if what_to_do:
                 st.write(f"**What to Do:** {what_to_do}")
+            # Get all OpenAI summaries for this patient, passing stage info
+            if st.button("Generate AI Insights for This Patient"):
+                patient_name = selected_row['name'] if 'name' in selected_row else selected_row[1]
+                results = openai_dailylog_module.process_daily_logs_with_openai(stage_name=stage_name)
+                patient_results = [item for item in results if item['log'][0] == patient_name]
+                if patient_results:
+                    for item in patient_results:
+                        st.markdown(f"**Date:** {item['log'][1]}")
+                        st.markdown(f"**Daily Log:** {item['log']}")
+                        st.markdown(f"**AI Summary:** {item['summary']}")
+                        st.markdown("---")
+                else:
+                    st.info("No daily logs found for this patient.")
     else:
         st.info("No patient data found.")
